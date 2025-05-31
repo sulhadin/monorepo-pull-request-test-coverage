@@ -53,7 +53,7 @@ The workflow runs on:
     - Cleans up artifacts to save storage
    
 4. **Exclude some packages (optional)**
-You can specify packages and libs that you don't want to get coverage of.
+   - You can specify packages and libs that you don't want to get coverage of.
 
 ```
  EXCLUDED_PACKAGES="repo-x|lib-y|repo-z"
