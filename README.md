@@ -51,3 +51,10 @@ The workflow runs on:
     - Generates a markdown table with coverage metrics for each package
     - Posts the summary as a comment on the PR
     - Cleans up artifacts to save storage
+   
+4. **Exclude some packages (optional)**
+You can specify packages and libs that you don't want to get coverage of.
+
+```
+ EXCLUDED_PACKAGES="repo-x|lib-y|repo-z"
+```
