@@ -1,0 +1,233 @@
+name: PR Test Coverage Workflow
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+
+jobs:
+  changed-packages:
+    name: Detect changed packages
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.get-changes.outputs.matrix }}
+      has_changes: ${{ steps.get-changes.outputs.has_changes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Get changed packages
+        id: get-changes
+        run: |
+          # Get list of changed files
+          CHANGED_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+          
+          # Define packages to exclude
+          EXCLUDED_PACKAGES="repo-x|lib-y|repo-z"
+          
+          # Find changed packages in apps and libs, excluding unwanted packages
+          APPS_CHANGES=$(echo "$CHANGED_FILES" | grep "^apps/" | grep -Ev "apps/($EXCLUDED_PACKAGES)/" | cut -d/ -f2 | sort -u || true)
+          LIBS_CHANGES=$(echo "$CHANGED_FILES" | grep "^libs/" | grep -Ev "libs/($EXCLUDED_PACKAGES)/" | cut -d/ -f2 | sort -u || true)
+          
+          # Combine all changes with their types into a JSON array
+          MATRIX_ITEMS="["
+          HAS_CHANGES="false"
+          
+          # Add apps changes
+          while IFS= read -r pkg; do
+            if [ ! -z "$pkg" ]; then
+              if [ "$MATRIX_ITEMS" != "[" ]; then
+                MATRIX_ITEMS="$MATRIX_ITEMS,"
+              fi
+              MATRIX_ITEMS="$MATRIX_ITEMS{\"type\":\"apps\",\"name\":\"$pkg\"}"
+              HAS_CHANGES="true"
+            fi
+          done <<< "$APPS_CHANGES"
+          
+          # Add libs changes
+          while IFS= read -r pkg; do
+            if [ ! -z "$pkg" ]; then
+              if [ "$MATRIX_ITEMS" != "[" ]; then
+                MATRIX_ITEMS="$MATRIX_ITEMS,"
+              fi
+              MATRIX_ITEMS="$MATRIX_ITEMS{\"type\":\"libs\",\"name\":\"$pkg\"}"
+              HAS_CHANGES="true"
+            fi
+          done <<< "$LIBS_CHANGES"
+          
+          MATRIX_ITEMS="$MATRIX_ITEMS]"
+          
+          # Create matrix output
+          echo "matrix={\"include\":$MATRIX_ITEMS}" >> $GITHUB_OUTPUT
+          echo "has_changes=$HAS_CHANGES" >> $GITHUB_OUTPUT
+          
+          echo "Found changes in:"
+          echo "$MATRIX_ITEMS"
+
+  unit-tests:
+    name: Run unit tests
+    needs: [changed-packages]
+    if: |
+      needs.changed-packages.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      NODE_OPTIONS: --max-old-space-size=4096
+      TZ: Europe/Istanbul
+
+    strategy:
+      matrix: ${{ fromJson(needs.changed-packages.outputs.matrix) }}
+      fail-fast: false
+
+    timeout-minutes: 10
+    outputs:
+      coverage: ${{ steps.extract-coverage.outputs.coverage }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+      - uses: ./.github/actions/setup
+        with:
+          branch: ${{ github.head_ref }}
+      - name: Run tests
+        run: |
+          cd ${{ matrix.type }}/${{ matrix.name }}
+          echo "Running tests for ${{ matrix.type }}/${{ matrix.name }}"
+          yarn dlx jest --passWithNoTests --coverage
+
+      - name: Upload coverage results2
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.type }}-${{ matrix.name }}
+          path: |
+            ${{ matrix.type }}/${{ matrix.name }}/coverage/lcov-report
+            coverage-${{ matrix.type }}-${{ matrix.name }}.json
+          retention-days: 7
+
+      - name: Extract coverage percentage
+        id: extract-coverage
+        run: |
+          ROOT_DIR=$PWD
+          cd ${{ matrix.type }}/${{ matrix.name }}
+          STMT_COVERAGE=$(grep -o '<span class="strong">[^<]*%' coverage/lcov-report/index.html | sed 's/<span class="strong">//g' | sed 's/%<\/span>//g' | head -n 1)
+          BRANCH_COVERAGE=$(grep -o '<span class="strong">[^<]*%' coverage/lcov-report/index.html | sed 's/<span class="strong">//g' | sed 's/%<\/span>//g' | head -n 2 | tail -n 1)
+          FUNC_COVERAGE=$(grep -o '<span class="strong">[^<]*%' coverage/lcov-report/index.html | sed 's/<span class="strong">//g' | sed 's/%<\/span>//g' | head -n 3 | tail -n 1)
+          LINE_COVERAGE=$(grep -o '<span class="strong">[^<]*%' coverage/lcov-report/index.html | sed 's/<span class="strong">//g' | sed 's/%<\/span>//g' | head -n 4 | tail -n 1)
+          
+          # Output the coverage summary
+          echo "Coverage Summary for ${{ matrix.type }}/${{ matrix.name }}:"
+          echo "Statements: $STMT_COVERAGE%"
+          echo "Branches: $BRANCH_COVERAGE%"
+          echo "Functions: $FUNC_COVERAGE%"
+          echo "Lines: $LINE_COVERAGE%"
+          
+          # Go back to root directory to create JSON file
+          cd $ROOT_DIR
+          
+          echo "Creating coverage data for ${{ matrix.type }}/${{ matrix.name }}"
+          echo "{\"type\":\"${{ matrix.type }}\",\"name\":\"${{ matrix.name }}\",\"stmt\":\"$STMT_COVERAGE\",\"branch\":\"$BRANCH_COVERAGE\",\"func\":\"$FUNC_COVERAGE\",\"line\":\"$LINE_COVERAGE\"}" > summary-${{ matrix.type }}-${{ matrix.name }}.json
+          
+          # Debug: show current directory and file
+          pwd
+          ls -la summary-${{ matrix.type }}-${{ matrix.name }}.json
+
+      - name: Upload coverage summary data
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary-${{ matrix.type }}-${{ matrix.name }}
+          path: summary-${{ matrix.type }}-${{ matrix.name }}.json
+          retention-days: 1
+  post-coverage:
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all coverage data
+        uses: actions/download-artifact@v4
+        with:
+          path: summary-data
+      - name: Post coverage summary comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            // Read coverage files
+            const coverageDir = 'summary-data';
+            const coverages = [];
+            
+            for (const dir of fs.readdirSync(coverageDir)) {
+              const dirPath = path.join(coverageDir, dir);
+              const files = fs.readdirSync(dirPath);
+            
+              for (const file of files) {
+                if (file.endsWith('.json')) {
+                  const content = fs.readFileSync(path.join(dirPath, file), 'utf8');
+                  coverages.push(JSON.parse(content));
+                }
+              }
+            }
+            
+            // Create summary comment
+            let body = '### 📊 Test Coverage Summary\n\n';
+            body += '| Package | Statements | Branches | Functions | Lines |\n';
+            body += '|---------|------------|----------|-----------|-------|\n';
+            
+            coverages.sort((a, b) => 
+              `${a.type}/${a.name}`.localeCompare(`${b.type}/${b.name}`)
+            ).forEach(cov => {
+              body += `| ${cov.type}/${cov.name} | ${cov.stmt} | ${cov.branch} | ${cov.func} | ${cov.line} |\n`;
+            });
+            
+            body += `\n[View Full Report](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})`;
+
+            core.info('\nComment Body:');
+            core.info(body);
+            
+            // Delete existing comments
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+
+            for (const comment of comments) {
+              if (comment.body.includes('Test Coverage Summary')) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: comment.id
+                });
+              }
+            }
+
+            // Post new comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
+
+            // Delete artifacts
+            const { data: artifacts } = await github.rest.actions.listArtifactsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+
+            // Find and delete coverage artifacts from current run
+            for (const artifact of artifacts.artifacts) {
+              if (artifact.name.startsWith('summary-') &&
+                  artifact.workflow_run.id === context.runId) {
+                core.info(`Deleting artifact: ${artifact.name}`);
+                await github.rest.actions.deleteArtifact({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  artifact_id: artifact.id
+                });
+              }
+            }

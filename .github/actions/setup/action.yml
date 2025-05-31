@@ -1,0 +1,42 @@
+name: 'Setup Environment'
+description: 'Sets up Node.js, Yarn, and installs dependencies'
+
+inputs:
+  branch:
+    required: true
+    description: 'Target branch'
+  deploy_key:
+    required: false
+    description: 'Deploy key'
+
+runs:
+  using: 'composite'
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.branch }}  # This ensures we're using dev branch
+        fetch-depth: 0
+        ssh-key: ${{ inputs.deploy_key }}
+
+    - name: Sync with target branch
+      shell: bash
+      run: |
+        echo "Checkout: ${{ inputs.branch }}"
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: '.nvmrc'
+    - name: Setup Yarn
+      shell: bash
+      run: |
+        corepack enable
+        yarn set version 4.6.0
+        yarn --version
+        ls -la ./
+        cat .yarnrc.yml
+    - name: Install Dependencies
+      shell: bash
+      run: |
+        yarn --version
+        yarn install --immutable --inline-builds
