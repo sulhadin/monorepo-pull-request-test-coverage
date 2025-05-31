@@ -4,8 +4,11 @@ This document explains the GitHub Actions workflow that automatically runs tests
 **Example coverage on pull request**
 ![res1.png](resource/res1.png)
 
+
 ## Overview
 The PR Test Coverage Workflow automatically runs unit tests on packages that have changed in a pull request and posts a summary of the test coverage as a comment on the PR. This helps ensure code quality by making test coverage metrics visible to reviewers.
+
+[pr_test_coverage.yml](.github/workflows/pr_test_coverage.yml)
 
 ## Folder Structure
 The workflow assumes a monorepo structure with the following layout:
